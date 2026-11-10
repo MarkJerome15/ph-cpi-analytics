@@ -1,0 +1,36 @@
+name: Monthly data refresh
+
+on:
+  schedule:
+    - cron: "0 1 12 * *"      # 12th of every month, 01:00 UTC (09:00 Manila time)
+  workflow_dispatch:           # adds a manual "Run workflow" button for testing
+
+permissions:
+  contents: write              # allows the workflow to save the updated outputs back to the repo
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install libraries
+        run: pip install -r requirements.txt
+
+      - name: Run the pipeline (fetch, clean, validate, export, charts, forecast)
+        run: python run_all.py
+
+      - name: Save updated outputs to the repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs images
+          git diff --cached --quiet || git commit -m "Monthly data refresh $(date +%Y-%m)"
+          git push

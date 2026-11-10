@@ -3,7 +3,7 @@ import subprocess
 import sys
 import time
 
-steps = ["fetch.py", "clean.py", "export.py", "charts.py", "forecast.py"]  
+steps = ["fetch.py", "clean.py", "validate.py", "export.py", "charts.py", "forecast.py"]
 
 for step in steps:
     start = time.time()
