@@ -1,9 +1,11 @@
 # What is driving Philippine inflation? (2019–2026)
 
-An end-to-end analysis of the Philippine Statistics Authority's Consumer Price Index (CPI):
-from messy official CSVs to a validated SQLite database, SQL analysis, a statistical forecast and an interactive Power BI dashboard.
+[![Monthly data refresh](https://github.com/MarkJerome15/ph-cpi-analytics/actions/workflows/monthly_refresh.yml/badge.svg)](https://github.com/MarkJerome15/ph-cpi-analytics/actions/workflows/monthly_refresh.yml)
 
-**Tools:** Python (pandas, matplotlib, statsmodels) · SQLite · SQL (CTEs, window functions, conditional aggregation) · Power BI (DAX)
+An end-to-end, automated analysis of the Philippine Statistics Authority's Consumer Price Index (CPI):
+data pulled from PSA's API every month, cleaned into a validated SQLite database, analysed in SQL, forecast with a tested model, and presented in an interactive Power BI dashboard.
+
+**Tools:** Python (pandas, requests, matplotlib, statsmodels) · SQLite · SQL (CTEs, window functions, conditional aggregation) · Power BI (DAX) · GitHub Actions
 
 ![Inflation trend](images/01_inflation_trend.png)
 
@@ -19,14 +21,35 @@ Philippine inflation reached **7.8% in October 2026**, close to its January 2023
 | 2 | Is it only a fuel shock? | **No.** Excluding food, transport and utilities, inflation is still **5.3%** and rising. |
 | 3 | Which regions are hit hardest? | **BARMM 9.9%** vs **Metro Manila 5.9%**. **11 of 18** regions are above the national rate. |
 | 4 | Are some months always more expensive? | **January** is the dependable high month. April's high average is caused by one shock year. |
-| 5 | Where is inflation heading? | Roughly **4.6%–7.8% by October 2027**, depending on the assumption. Forecasts cannot anticipate shocks. |
-| 6 | Can the data be trusted? | Yes, at national level: all checks pass. Detailed provincial item data is thin (structural gaps). |
+| 5 | Where is inflation heading? | Roughly **4½% to 8% by October 2027**, depending on the assumption. Forecasts cannot anticipate shocks. |
+| 6 | Can the data be trusted? | Yes, at national level: all checks pass, automatically, every month. Detailed provincial item data is thin (structural gaps). |
+
+---
+
+## Automation
+
+The whole pipeline runs **by itself on the 12th of every month** on GitHub Actions (`.github/workflows/monthly_refresh.yml`):
+
+```
+fetch.py      download the latest CPI, year-on-year and weights tables from PSA's OpenSTAT API
+clean.py      reshape and clean → rebuild the SQLite database
+validate.py   data-quality gate: if any check fails, the run stops and nothing is published
+export.py     run the SQL files → CSVs for Power BI (outputs/)
+charts.py     redraw the charts (images/)
+forecast.py   re-run the backtest and the 12-month forecast
+```
+
+The updated `outputs/` and `images/` are committed back to this repo by `github-actions[bot]`. A full run takes about 14 minutes.
+
+- **API validated against the manual download:** all 7.6 million values identical, matched on place + item code (`validate_api.py`).
+- **Polite to PSA's server:** requests are batched (2 places per request), paused 1 second apart, and retried with a wait if the server says "too many requests".
+- **Dashboard:** Power BI Desktop refreshes from `outputs/` with one click (fully automatic dashboard refresh would need the paid Power BI Service).
 
 ---
 
 ## Interactive Power BI dashboard
 
-Four pages built on the pipeline's output CSVs (`outputs/`). When new data arrives, `python run_all.py` + **Refresh** in Power BI updates everything.
+Four pages built on the pipeline's output CSVs (`outputs/`).
 
 | Overview | Drivers |
 |---|---|
@@ -126,7 +149,7 @@ File: `ph_inflation_dashboard.pbix`. Features: DAX measures (latest rate, peak, 
 **Result:**
 - The two models perform about the same. ARIMA is slightly better only at 12 months.
 - A forecast made in October 2025 **missed the 2026 energy shock completely** (error grew to −5.7%). No price-based model can foresee external shocks.
-- **Forecast for October 2027: 4.6% (Seasonal ARIMA, 80% range shown) to 7.8% (2026 pace continues).**
+- **Forecast for October 2027: roughly 4½% (Seasonal ARIMA, 80% range shown) to 8% (2026 pace continues).** The exact ARIMA figure moves by a few tenths between runs and library versions, which is small next to its ±2.4-point error a year ahead. The chart below always shows the latest run.
 
 ![Forecast](images/06_forecast.png)
 
@@ -134,14 +157,15 @@ File: `ph_inflation_dashboard.pbix`. Features: DAX measures (latest rate, peak, 
 
 ## Question 6: Can the data be trusted? (data quality)
 
-**How I checked it:**
+**How I checked it** (the first three run automatically every month in `validate.py`):
 
 | Check | Result |
 |---|---|
 | Recomputed year-on-year inflation vs PSA's published figures (`sql/03_validate_yoy.sql`) | All **94** months match within rounding (max gap 0.049 pp) |
 | National category weights add up to 100% (`sql/04_weights_check.sql`) | 13 categories, total **100.0** |
 | Category contributions add up to headline inflation (`sql/06_validate_contribution.sql`) | Max gap **0.12 pp** over 94 months |
-| Dashboard numbers vs SQL/Python results | Match (7.8%, 8.7%, 4.6%) |
+| API download vs manual download (`validate_api.py`) | **7.6 million** values identical |
+| Dashboard numbers vs SQL/Python results | Match (7.8%, 8.7%, forecast) |
 
 **Missing data:** 19.5% of cells in the raw CPI file are empty (`..`). Most of it is **structural, not random**:
 - Nov–Dec 2026 are not yet published (100% empty).
@@ -155,11 +179,15 @@ Missing values are dropped, never filled in.
 ## How it works
 
 ```
-PSA OpenSTAT CSVs (wide, title row, '..' for missing)
-   │  clean.py    skip title row · reshape wide → long · numbers & dates · split labels
+PSA OpenSTAT API
+   │  fetch.py     batched requests → same CSV layout as the website download
+   ▼
+data/raw/*.csv (wide, title row, '..' for missing)
+   │  clean.py     skip title row · reshape wide → long · numbers & dates · split labels
    ▼
 SQLite database: cpi · yoy_published · weights
-   │  sql/        12 queries: analysis + validation
+   │  validate.py  data-quality gate (stops the pipeline if a check fails)
+   │  sql/         12 queries: analysis + validation
    ▼
 export.py → outputs/*.csv → Power BI dashboard
 charts.py → images/        forecast.py → backtest + 12-month forecast
@@ -167,29 +195,30 @@ charts.py → images/        forecast.py → backtest + 12-month forecast
 
 | File / folder | What it does |
 |---|---|
+| `fetch.py` | Downloads the 3 PSA tables through the OpenSTAT API |
 | `explore.py` | First look at the raw file: structure and missing data |
-| `clean.py` | Cleans the 3 PSA files and builds `data/processed/ph_cpi.db` |
+| `clean.py` | Cleans the PSA files and builds `data/processed/ph_cpi.db` |
+| `validate.py` | Data-quality gate: runs the validation queries, stops the pipeline on failure |
 | `sql/` | 12 SQL queries: analysis and validation checks |
 | `export.py` | Runs the SQL files and saves dashboard tables to `outputs/` |
 | `charts.py` | Charts 1–5 (reads the saved SQL files directly) |
 | `forecast.py` | Backtest, forecast and chart 6 |
 | `run_all.py` | Runs everything in order with one command |
+| `validate_api.py` | One-time check that the API data matches the manual download |
+| `.github/workflows/monthly_refresh.yml` | Monthly schedule on GitHub Actions |
 | `ph_inflation_dashboard.pbix` | Power BI dashboard |
 
 ## Run it yourself
 
-1. Download from [PSA OpenSTAT](https://openstat.psa.gov.ph/) (Price Indices, 2018-based) and place in `data/raw/`:
-   - Consumer Price Index for All Income Households by Commodity Group
-   - Year-on-Year Changes of the CPI by Commodity Group
-   - Weights by Commodity Group for CPI
-2. `pip install -r requirements.txt`
-3. `python run_all.py`
-4. Open `ph_inflation_dashboard.pbix` and click **Refresh**.
+1. `pip install -r requirements.txt`
+2. `python run_all.py` (downloads the data from PSA automatically; about 15 minutes)
+3. Open `ph_inflation_dashboard.pbix` and click **Refresh**.
 
 ## Limitations
 
 - The "excluding" measures are my own calculation, not PSA's official core CPI.
 - Weights are fixed at 2018 spending shares, so contributions drift slightly from the headline.
 - Forecasts use past prices only and cannot anticipate external shocks (oil prices, typhoons, policy changes).
+- The written findings above describe the October 2026 data. Charts and output files update automatically each month; the text is updated by hand.
 
 *Data: Philippine Statistics Authority, OpenSTAT. Analysis by Mark Jerome.*
